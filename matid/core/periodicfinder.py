@@ -5,6 +5,7 @@ from collections import deque, defaultdict, OrderedDict
 import numpy as np
 import networkx as nx
 from ase import Atoms
+import ase.geometry
 
 import matid.geometry
 from matid.data import constants
@@ -1411,6 +1412,15 @@ class PeriodicFinder:
         )
         multipliers = self._get_multipliers(periodic_indices)
 
+        # The cells are passed around as (basis, cartesian positions, atomic
+        # numbers) instead of ase.Atoms, which are comparatively expensive to
+        # create for every searched cell.
+        unit_cell_data = (
+            np.array(unit_cell.get_cell()),
+            unit_cell.get_positions(),
+            unit_cell.get_atomic_numbers(),
+        )
+
         # Start off the queue
         self._find_region_rec(
             system,
@@ -1418,7 +1428,7 @@ class PeriodicFinder:
             seed_index,
             seed_pos,
             seed_number,
-            unit_cell,
+            unit_cell_data,
             seed_position,
             searched_cell_indices,
             (0, 0, 0),
@@ -1501,7 +1511,8 @@ class PeriodicFinder:
             seed_index(int): Index of the seed atom in the original system.
             seed_pos(np.ndarray): Position of the seed atom in cartesian coordinates.
             seed_atomic_number(int): Atomic number of the seed atom.
-            unit_cell(ASE.Atoms): The current guess for the unit cell.
+            unit_cell(tuple): The current guess for the unit cell as a tuple
+                of (basis, cartesian positions, atomic numbers).
             seed_offset(np.ndrray): Cartesian offset of the seed atom from the unit cell
                 origin.
             searched_cell_indices(set): Set of 3D indices that have been searched.
@@ -1517,16 +1528,18 @@ class PeriodicFinder:
             searched_cell_indices.add(tuple(cell_index))
 
         # Try to get the scaled positions for atoms in this new cell. If the
-        # cell is non-invertible, then this cell is not processed.
+        # cell is non-invertible, then this cell is not processed. The scaled
+        # positions are calculated in the same way as in
+        # ase.Atoms.get_scaled_positions(wrap=False): wrapping is here disabled
+        # because it does not handle well values that are negative within
+        # machine precision.
+        old_basis, unit_cell_pos, cell_num = unit_cell
         try:
-            # Wrapping is here disabled because it does not handle well values
-            # that are negative within machine precision.
-            cell_pos = unit_cell.get_scaled_positions(wrap=False)
+            cell_pos = np.linalg.solve(
+                ase.geometry.complete_cell(old_basis).T, unit_cell_pos.T
+            ).T
         except Exception:
             return
-
-        cell_num = unit_cell.get_atomic_numbers()
-        old_basis = unit_cell.get_cell()
 
         new_seed_indices = []
         new_seed_pos = []
@@ -1535,7 +1548,7 @@ class PeriodicFinder:
         orig_pbc = system.get_pbc()
 
         # Translate and wrap the searched positions
-        test_pos = unit_cell.get_positions() - seed_offset + seed_pos
+        test_pos = unit_cell_pos - seed_offset + seed_pos
         test_pos = matid.geometry.to_scaled(
             orig_cell, test_pos, pbc=orig_pbc, wrap=True
         )
@@ -1617,19 +1630,11 @@ class PeriodicFinder:
         )
         collection[cell_index] = new_unit
 
-        # Save the updated cell shape for the new cells in the queue. If the
-        # found system is invalid, the result is ignored.
-        try:
-            new_sys = Atoms(
-                cell=new_cell,
-                scaled_positions=cell_pos,
-                symbols=cell_num,
-                pbc=unit_cell.get_pbc(),
-            )
-        except Exception:
-            return
-
-        cells = len(new_seed_pos) * [new_sys]
+        # Save the updated cell shape for the new cells in the queue. The
+        # positions are calculated from the scaled positions in the same way
+        # as when creating an ase.Atoms with scaled_positions.
+        new_unit_cell = (new_cell, np.dot(cell_pos, new_cell), cell_num)
+        cells = len(new_seed_pos) * [new_unit_cell]
 
         # Add the found neighbours to a queue
         queue.extend(list(zip(new_seed_indices, new_seed_pos, new_cell_indices, cells)))
