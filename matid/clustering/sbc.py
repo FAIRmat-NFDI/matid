@@ -115,12 +115,20 @@ class SBC:
 
         # Calculate the distances here once if they have not been provided. A
         # finite radial cutoff is used: the clustering only ever consults local
-        # distances (spans within max_cell_size, and the smaller merge_radius /
-        # bond_threshold thresholds). Pairs beyond the cutoff are reported as
-        # infinite, which fail those same thresholds, so the result is identical
-        # to using an infinite cutoff while being dramatically faster.
+        # distances. Pairs beyond the cutoff are reported as infinite, which
+        # fail the same thresholds, so the result is identical to using an
+        # infinite cutoff while being dramatically faster. The distances are
+        # consulted with the following thresholds:
+        # - Cell spans: raw distance < max_cell_size
+        # - Cluster localization: distance - radii < merge_radius
+        # - Cluster cleaning and dimensionality: distance - radii <= bond_threshold
+        # The cutoff is the smallest one that covers all of these, as the number
+        # of stored neighbours grows with the cube of the cutoff. A small margin
+        # protects against floating point differences at the boundary.
         max_radii = radii.max()
-        cutoff = max(max_cell_size, merge_radius, bond_threshold) + 2 * max_radii
+        cutoff = (
+            max(max_cell_size, max(merge_radius, bond_threshold) + 2 * max_radii) + 1e-6
+        )
         distances = matid.geometry.get_distances(system_copy, radii, cutoff=cutoff)
 
         # Iteratively search for new clusters until whole system is covered
