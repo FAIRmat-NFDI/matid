@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <vector>
 #include <stdexcept>
+#include <cstdint>
 #include <pybind11/numpy.h>
 #include "celllist.h"
 
