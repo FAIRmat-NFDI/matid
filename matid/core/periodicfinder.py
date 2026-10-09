@@ -16,6 +16,57 @@ def inner1d(a, b):
     return (a * b).sum(axis=1)
 
 
+class _PointGrid:
+    """Spatial hash for answering "is there a stored point within the given
+    tolerance" in constant time.
+
+    Replaces a linear scan over all stored points, which made the vacancy
+    bookkeeping of the region search scale quadratically with the number of
+    vacancies. The answers are identical to the linear scan: any point within
+    ``tol`` of the query lies in one of the 27 buckets surrounding it.
+    """
+
+    def __init__(self, tol):
+        self.tol = tol
+        self.bucket_size = tol if tol > 0 else 1e-12
+        self.buckets = defaultdict(list)
+        self.n_points = 0
+        # The linear scan used ``distances.min() > tol``. A stored non-finite
+        # position turns that minimum into nan, after which no point is
+        # considered new anymore. This flag reproduces that behaviour.
+        self.has_nonfinite = False
+
+    def __len__(self):
+        return self.n_points
+
+    def _key(self, position):
+        return tuple(int(x) for x in np.floor(position / self.bucket_size))
+
+    def is_new(self, position):
+        """Returns True if no stored point is within the tolerance."""
+        if self.n_points == 0:
+            return True
+        if self.has_nonfinite or not np.isfinite(position).all():
+            return False
+        kx, ky, kz = self._key(position)
+        candidates = []
+        for dx, dy, dz in itertools.product((-1, 0, 1), repeat=3):
+            bucket = self.buckets.get((kx + dx, ky + dy, kz + dz))
+            if bucket:
+                candidates.extend(bucket)
+        if not candidates:
+            return True
+        distances = np.linalg.norm(np.array(candidates) - position, axis=1)
+        return distances.min() > self.tol
+
+    def add(self, position):
+        self.n_points += 1
+        if not np.isfinite(position).all():
+            self.has_nonfinite = True
+            return
+        self.buckets[self._key(position)].append(position)
+
+
 # These are the directions in which the recursive search can progress into. Note
 # that also diagonal directions should be included in order for the search to
 # not miss atoms.
@@ -1302,7 +1353,7 @@ class PeriodicFinder:
 
         searched_cell_indices = set()
         used_indices = set()
-        searched_vacancy_positions = []
+        searched_vacancy_positions = _PointGrid(self.pos_tol)
         queue = deque()
         collection = LinkedUnitCollection(
             system,
@@ -1473,18 +1524,13 @@ class PeriodicFinder:
         # before.
         new_vacancy_pos = []
         valid_vacancies = []
-        vacancy_pos_array = np.array(searched_vacancy_positions)
         for vacancy in vacancies:
             # Check if this vacancy has already been found
-            if len(searched_vacancy_positions) != 0:
-                vac_dist = np.linalg.norm(vacancy_pos_array - vacancy.position, axis=1)
-                if vac_dist.min() > self.pos_tol:
-                    new_vacancy_pos.append(vacancy.position)
-                    valid_vacancies.append(vacancy)
-            else:
+            if searched_vacancy_positions.is_new(vacancy.position):
                 new_vacancy_pos.append(vacancy.position)
                 valid_vacancies.append(vacancy)
-        searched_vacancy_positions.extend(new_vacancy_pos)
+        for position in new_vacancy_pos:
+            searched_vacancy_positions.add(position)
 
         # Find the neighbouring cells for extending the search
         dislocations = np.dot(multipliers, old_basis)
