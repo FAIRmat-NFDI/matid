@@ -166,3 +166,47 @@ class Distances:
         di = np.arange(k)
         out[di, di] = -2.0 * self._radii[indices]
         return out
+
+    def get_radii_distance_edges(self, indices, threshold):
+        """Returns the local index pairs ``(li, lj)`` with ``li <= lj`` for which
+        ``dist_matrix_radii_mic[np.ix_(indices, indices)] <= threshold``,
+        including the diagonal. The pairs are returned in row-major order.
+
+        This is a sparse alternative to :meth:`get_radii_distance_submatrix`
+        for finding connectivity within a large group of atoms: the memory
+        footprint scales with the number of connected pairs instead of the
+        square of the number of atoms.
+
+        Returns:
+            Two integer arrays ``(li, lj)``.
+        """
+        indices = np.asarray(indices, dtype=np.intp)
+        k = len(indices)
+        if self._dense:
+            submatrix = self._dist_matrix_radii_mic[np.ix_(indices, indices)]
+            li, lj = np.nonzero(np.triu(submatrix <= threshold))
+            return li, lj
+
+        # Gather the neighbour list entries of all requested rows at once.
+        g2l = np.full(self._n, -1, dtype=np.intp)
+        g2l[indices] = np.arange(k)
+        starts = self._row_ptr[indices]
+        lengths = self._row_ptr[indices + 1] - starts
+        li = np.repeat(np.arange(k), lengths)
+        offsets = np.cumsum(lengths) - lengths
+        entries = np.arange(lengths.sum()) + np.repeat(starts - offsets, lengths)
+        cols = self._col[entries]
+        lj = g2l[cols]
+        sel = lj > li
+        li, lj, gi, cols = li[sel], lj[sel], indices[li[sel]], cols[sel]
+        dist = self._dist[entries[sel]] - (self._radii[gi] + self._radii[cols])
+        sel = dist <= threshold
+        li, lj = li[sel], lj[sel]
+
+        # Add the diagonal and order the pairs row-major.
+        diag = np.arange(k)
+        diag = diag[-2.0 * self._radii[indices] <= threshold]
+        li = np.concatenate((li, diag))
+        lj = np.concatenate((lj, diag))
+        order = np.lexsort((lj, li))
+        return li[order], lj[order]

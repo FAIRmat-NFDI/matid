@@ -332,11 +332,22 @@ class SBC:
         for cluster in clusters:
             # If the cluster cleaning fails, the cluster is not reported
             try:
-                dbscan_clusters = matid.geometry.get_clusters(
-                    cluster._get_distance_matrix_radii_mic(),
-                    bond_threshold,
-                    min_samples=1,
-                )
+                # The connectivity is resolved from the sparse neighbour list
+                # instead of a dense distance submatrix, whose size would
+                # scale quadratically with the cluster size.
+                if bond_threshold > 0:
+                    rows, cols = cluster._distances.get_radii_distance_edges(
+                        cluster.indices, bond_threshold
+                    )
+                    dbscan_clusters = matid.geometry.get_clusters_from_edges(
+                        len(cluster.indices), rows, cols
+                    )
+                else:
+                    dbscan_clusters = matid.geometry.get_clusters(
+                        cluster._get_distance_matrix_radii_mic(),
+                        bond_threshold,
+                        min_samples=1,
+                    )
             except Exception:
                 continue
             largest_indices = max(dbscan_clusters, key=len)

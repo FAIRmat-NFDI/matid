@@ -318,6 +318,29 @@ def get_clusters(dist_matrix, threshold, min_samples=1):
     return [list(component) for component in nx.connected_components(graph)]
 
 
+def get_clusters_from_edges(n, rows, cols):
+    """Used to detect clusters, i.e. connected components, from a sparse list
+    of connections.
+
+    Gives identical results to :func:`get_clusters` when given the pairs
+    ``(i, j)``, ``i <= j``, for which ``dist_matrix[i, j] <= threshold`` in
+    row-major order, but without requiring the dense ``n x n`` matrix.
+
+    Args:
+        n(int): Number of nodes.
+        rows(np.ndarray): First node index of each connection.
+        cols(np.ndarray): Second node index of each connection.
+
+    Returns:
+        list: A list of clusters, where each cluster is a list of indices for
+        the elements belonging to the cluster.
+    """
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n))
+    graph.add_edges_from(zip(np.asarray(rows).tolist(), np.asarray(cols).tolist()))
+    return [list(component) for component in nx.connected_components(graph)]
+
+
 def get_covalent_distances(system, mic=True):
     """Returns a distance matrix where the covalent radii have been taken into
     account. Clips negative values to be zero.
