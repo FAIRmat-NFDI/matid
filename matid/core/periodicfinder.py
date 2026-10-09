@@ -1,4 +1,5 @@
 import itertools
+import math
 from collections import deque, defaultdict, OrderedDict
 
 import numpy as np
@@ -36,6 +37,22 @@ def get_region_cell_list(system, pos_tol):
     )
 
 
+def _combinations_3(n):
+    """Returns all index triplets i < j < k from range(n) in lexicographic
+    order as an [m, 3] array. Identical to
+    np.array(list(itertools.combinations(range(n), 3))) for n >= 3, but avoids
+    creating a Python tuple for each of the O(n^3) combinations.
+    """
+    i, j = np.triu_indices(n, k=1)
+    counts = n - 1 - j
+    total = counts.sum()
+    first = np.repeat(i, counts)
+    second = np.repeat(j, counts)
+    offsets = np.cumsum(counts) - counts
+    third = np.arange(total) + np.repeat(j + 1 - offsets, counts)
+    return np.stack((first, second, third), axis=1).astype(np.int64)
+
+
 class _PointGrid:
     """Spatial hash for answering "is there a stored point within the given
     tolerance" in constant time.
@@ -59,32 +76,43 @@ class _PointGrid:
     def __len__(self):
         return self.n_points
 
-    def _key(self, position):
-        return tuple(int(x) for x in np.floor(position / self.bucket_size))
+    def _key(self, x, y, z):
+        b = self.bucket_size
+        return (math.floor(x / b), math.floor(y / b), math.floor(z / b))
 
     def is_new(self, position):
         """Returns True if no stored point is within the tolerance."""
         if self.n_points == 0:
             return True
-        if self.has_nonfinite or not np.isfinite(position).all():
+        x, y, z = position.tolist()
+        if self.has_nonfinite or not (
+            math.isfinite(x) and math.isfinite(y) and math.isfinite(z)
+        ):
             return False
-        kx, ky, kz = self._key(position)
-        candidates = []
-        for dx, dy, dz in itertools.product((-1, 0, 1), repeat=3):
-            bucket = self.buckets.get((kx + dx, ky + dy, kz + dz))
-            if bucket:
-                candidates.extend(bucket)
-        if not candidates:
-            return True
-        distances = np.linalg.norm(np.array(candidates) - position, axis=1)
-        return distances.min() > self.tol
+        kx, ky, kz = self._key(x, y, z)
+        tol = self.tol
+        buckets = self.buckets
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    bucket = buckets.get((kx + dx, ky + dy, kz + dz))
+                    if bucket is None:
+                        continue
+                    for px, py, pz in bucket:
+                        ex = px - x
+                        ey = py - y
+                        ez = pz - z
+                        if math.sqrt(ex * ex + ey * ey + ez * ez) <= tol:
+                            return False
+        return True
 
     def add(self, position):
         self.n_points += 1
-        if not np.isfinite(position).all():
+        x, y, z = position.tolist()
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
             self.has_nonfinite = True
             return
-        self.buckets[self._key(position)].append(position)
+        self.buckets[self._key(x, y, z)].append((x, y, z))
 
 
 # These are the directions in which the recursive search can progress into. Note
@@ -1188,8 +1216,7 @@ class PeriodicFinder:
         angle_thres_sin = abs(np.sin(angle_threshold))
 
         # Create combinations of normed spans
-        span_indices = range(len(valid_spans))
-        combo_indices = np.array(list(itertools.combinations(span_indices, 3)))
+        combo_indices = _combinations_3(len(valid_spans))
         normed_combos = norm_spans[combo_indices]
 
         # Create arrays containing the three angles for each combination. The
