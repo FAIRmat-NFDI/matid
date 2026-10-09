@@ -128,6 +128,9 @@ multipliers_2d_directions = np.array(
 )
 multipliers_2d[:, 0:2] = multipliers_2d_directions[1:]
 
+# Maps the multipliers of the cell basis vectors to the basis vector index.
+basis_multiplier_axis = {(1, 0, 0): 0, (0, 1, 0): 1, (0, 0, 1): 2}
+
 
 class PeriodicFinder:
     """Used to find translationally periodic structures within atomic systems."""
@@ -1597,7 +1600,7 @@ class PeriodicFinder:
             cell_index,
             searched_cell_indices,
             collection._used_points,
-            collection._search_graph,
+            collection,
             collection._index_cell_map,
         )
 
@@ -1644,7 +1647,7 @@ class PeriodicFinder:
         cell_index,
         searched_cell_indices,
         used_points,
-        search_graph,
+        collection,
         index_cell_map,
     ):
         """When given a prototype unit cell shape and a set of search
@@ -1755,10 +1758,12 @@ class PeriodicFinder:
                         index_cell_map[match] = target_cell
 
                     # Add an edge to the search graph
-                    search_graph.add_node(tuple(cell_index), index=seed_index)
-                    search_graph.add_node(tuple(target_cell), index=match)
-                    search_graph.add_edge(
-                        tuple(cell_index), tuple(target_cell), multiplier=multiplier
+                    collection.add_search_edge(
+                        tuple(cell_index),
+                        seed_index,
+                        tuple(target_cell),
+                        match,
+                        multiplier,
                     )
 
                     if match in used_indices:
@@ -1775,14 +1780,11 @@ class PeriodicFinder:
                 # Update the cell basis vector based on the found match. TODO:
                 # This displacement correction may have unwanted effects in
                 # noisy systems.
-                for i in range(3):
-                    basis_mult = [0, 0, 0]
-                    basis_mult[i] = 1
-                    basis_mult = tuple(basis_mult)
-                    if multiplier_tuple == basis_mult:
-                        i_basis = disloc
-                        if match:
-                            i_basis -= np.array(displacement)
-                        new_cell[i, :] = i_basis
+                i = basis_multiplier_axis.get(multiplier_tuple)
+                if i is not None:
+                    i_basis = disloc
+                    if match:
+                        i_basis -= np.array(displacement)
+                    new_cell[i, :] = i_basis
 
         return new_cell, new_seed_indices, new_seed_pos, new_cell_indices
