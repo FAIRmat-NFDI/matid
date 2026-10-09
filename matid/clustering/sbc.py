@@ -5,7 +5,7 @@ import ase.geometry
 
 import matid.geometry
 from matid.clustering.cluster import Cluster
-from matid.core.periodicfinder import PeriodicFinder
+from matid.core.periodicfinder import PeriodicFinder, get_region_cell_list
 
 
 class SBC:
@@ -115,16 +115,25 @@ class SBC:
 
         # Calculate the distances here once if they have not been provided. A
         # finite radial cutoff is used: the clustering only ever consults local
-        # distances (spans within max_cell_size, and the smaller merge_radius /
-        # bond_threshold thresholds). Pairs beyond the cutoff are reported as
-        # infinite, which fail those same thresholds, so the result is identical
-        # to using an infinite cutoff while being dramatically faster.
+        # distances. Pairs beyond the cutoff are reported as infinite, which
+        # fail the same thresholds, so the result is identical to using an
+        # infinite cutoff while being dramatically faster. The distances are
+        # consulted with the following thresholds:
+        # - Cell spans: raw distance < max_cell_size
+        # - Cluster localization: distance - radii < merge_radius
+        # - Cluster cleaning and dimensionality: distance - radii <= bond_threshold
+        # The cutoff is the smallest one that covers all of these, as the number
+        # of stored neighbours grows with the cube of the cutoff. A small margin
+        # protects against floating point differences at the boundary.
         max_radii = radii.max()
-        cutoff = max(max_cell_size, merge_radius, bond_threshold) + 2 * max_radii
+        cutoff = (
+            max(max_cell_size, max(merge_radius, bond_threshold) + 2 * max_radii) + 1e-6
+        )
         distances = matid.geometry.get_distances(system_copy, radii, cutoff=cutoff)
 
         # Iteratively search for new clusters until whole system is covered
         periodic_finder = PeriodicFinder(angle_tol=angle_tol)
+        cell_list = get_region_cell_list(system_copy, pos_tol)
         indices = set(list(range(len(system_copy))))
         clusters = []
         while len(indices) != 0:
@@ -138,6 +147,7 @@ class SBC:
                 overlap_threshold=overlap_threshold,
                 distances=distances,
                 return_mask=True,
+                cell_list=cell_list,
             )
 
             # All neighbours that the periodic finder has tested are removed
@@ -286,15 +296,15 @@ class SBC:
         """
         # Get all overlapping atoms, and the regions with which they overlap
         overlap_map = defaultdict(list)
-        for i in range(len(system)):
-            for cluster in clusters:
-                if i in cluster.indices:
-                    overlap_map[i].append(cluster)
+        for cluster in clusters:
+            for i in set(cluster.indices):
+                overlap_map[int(i)].append(cluster)
 
         # Assign each overlapping atom to the cluster that is "nearest". Notice
-        # that we do not update the regions during the process.
-        # positions = system.get_positions()
-        for i, i_clusters in overlap_map.items():
+        # that we do not update the regions during the process. The atoms are
+        # processed in ascending index order.
+        for i in sorted(overlap_map):
+            i_clusters = overlap_map[i]
             if len(i_clusters) > 1:
                 surrounding_indices = set(
                     np.where(distances.get_radii_distance_row(i) < merge_radius)[0]
@@ -332,11 +342,22 @@ class SBC:
         for cluster in clusters:
             # If the cluster cleaning fails, the cluster is not reported
             try:
-                dbscan_clusters = matid.geometry.get_clusters(
-                    cluster._get_distance_matrix_radii_mic(),
-                    bond_threshold,
-                    min_samples=1,
-                )
+                # The connectivity is resolved from the sparse neighbour list
+                # instead of a dense distance submatrix, whose size would
+                # scale quadratically with the cluster size.
+                if bond_threshold > 0:
+                    rows, cols = cluster._distances.get_radii_distance_edges(
+                        cluster.indices, bond_threshold
+                    )
+                    dbscan_clusters = matid.geometry.get_clusters_from_edges(
+                        len(cluster.indices), rows, cols
+                    )
+                else:
+                    dbscan_clusters = matid.geometry.get_clusters(
+                        cluster._get_distance_matrix_radii_mic(),
+                        bond_threshold,
+                        min_samples=1,
+                    )
             except Exception:
                 continue
             largest_indices = max(dbscan_clusters, key=len)

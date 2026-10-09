@@ -248,30 +248,62 @@ SparseDistances get_displacement_list(
     vector<int> col;
     vector<double> distance;
     vector<double> displacement;
-    vector<double> factor;
+    vector<int> factor;
     cell_list.get_displacement_list(cell_list.indices_py, n_atoms, row, col, distance, displacement, factor);
 
-    // Copy the flat result vectors into numpy arrays.
-    int nnz = row.size();
-    py::array_t<int> row_arr(nnz);
+    // Count the entries in each row: every found pair (i, j) is stored in both
+    // directions.
+    py::ssize_t n_pairs = row.size();
+    py::ssize_t nnz = 2 * n_pairs;
+    py::array_t<int64_t> row_ptr_arr(n_atoms + 1);
+    auto row_ptr_mu = row_ptr_arr.mutable_unchecked<1>();
+    for (int i = 0; i <= n_atoms; ++i) {
+        row_ptr_mu(i) = 0;
+    }
+    for (py::ssize_t p = 0; p < n_pairs; ++p) {
+        row_ptr_mu(row[p] + 1) += 1;
+        row_ptr_mu(col[p] + 1) += 1;
+    }
+    for (int i = 0; i < n_atoms; ++i) {
+        row_ptr_mu(i + 1) += row_ptr_mu(i);
+    }
+
+    // Scatter the pairs into their rows. The pairs are ordered by row and then
+    // by column, so that for each row the entries (row, col < row) are filled
+    // first in ascending column order, followed by the entries
+    // (row, col > row) in ascending column order.
     py::array_t<int> col_arr(nnz);
     py::array_t<double> distance_arr(nnz);
-    py::array_t<double> displacement_arr({nnz, 3});
-    py::array_t<double> factor_arr({nnz, 3});
-    auto row_mu = row_arr.mutable_unchecked<1>();
+    py::array_t<double> displacement_arr({nnz, (py::ssize_t)3});
+    py::array_t<int> factor_arr({nnz, (py::ssize_t)3});
     auto col_mu = col_arr.mutable_unchecked<1>();
     auto distance_mu = distance_arr.mutable_unchecked<1>();
     auto displacement_mu = displacement_arr.mutable_unchecked<2>();
     auto factor_mu = factor_arr.mutable_unchecked<2>();
-    for (int i = 0; i < nnz; ++i) {
-        row_mu(i) = row[i];
-        col_mu(i) = col[i];
-        distance_mu(i) = distance[i];
+    vector<int64_t> next(n_atoms);
+    for (int i = 0; i < n_atoms; ++i) {
+        next[i] = row_ptr_mu(i);
+    }
+    for (py::ssize_t p = 0; p < n_pairs; ++p) {
+        int i = row[p];
+        int j = col[p];
+
+        // Direction (i, j): displacement = pos_i - pos_j, factor = fac
+        int64_t a = next[i]++;
+        col_mu(a) = j;
+        distance_mu(a) = distance[p];
+
+        // Direction (j, i): antisymmetric displacement and factor
+        int64_t b = next[j]++;
+        col_mu(b) = i;
+        distance_mu(b) = distance[p];
         for (int k = 0; k < 3; ++k) {
-            displacement_mu(i, k) = displacement[i*3 + k];
-            factor_mu(i, k) = factor[i*3 + k];
+            displacement_mu(a, k) = displacement[3*p + k];
+            displacement_mu(b, k) = -displacement[3*p + k];
+            factor_mu(a, k) = factor[3*p + k];
+            factor_mu(b, k) = -factor[3*p + k];
         }
     }
 
-    return SparseDistances{row_arr, col_arr, distance_arr, displacement_arr, factor_arr};
+    return SparseDistances{row_ptr_arr, col_arr, distance_arr, displacement_arr, factor_arr};
 }
