@@ -164,7 +164,7 @@ CellListResult CellList::get_neighbours_for_position(
             for (int k = kstart; k <= kend; k++) {
 
                 // For each atom in the current bin, calculate the actual distance
-                vector<int> binIndices = this->bins[i][j][k];
+                const vector<int>& binIndices = this->bins[i][j][k];
                 for (auto &idx : binIndices) {
                     double ix = this->positions[idx][0];
                     double iy = this->positions[idx][1];
@@ -186,6 +186,87 @@ CellListResult CellList::get_neighbours_for_position(
         }
     }
     return CellListResult{neighbours, distances, distances_squared, displacements, indices_original, factors};
+}
+
+ClosestResult CellList::get_closest_for_positions(py::array_t<double> positions)
+{
+    auto positions_u = positions.unchecked<2>();
+    py::ssize_t n = positions_u.shape(0);
+    py::array_t<int> indices_arr(n);
+    py::array_t<double> distances_arr(n);
+    py::array_t<double> displacements_arr({n, (py::ssize_t)3});
+    py::array_t<double> factors_arr({n, (py::ssize_t)3});
+    auto indices_mu = indices_arr.mutable_unchecked<1>();
+    auto distances_mu = distances_arr.mutable_unchecked<1>();
+    auto displacements_mu = displacements_arr.mutable_unchecked<2>();
+    auto factors_mu = factors_arr.mutable_unchecked<2>();
+
+    for (py::ssize_t p = 0; p < n; ++p) {
+        double x = positions_u(p, 0);
+        double y = positions_u(p, 1);
+        double z = positions_u(p, 2);
+
+        // Find bin for the given position
+        int i0 = (x - this->xmin)/this->dx;
+        int j0 = (y - this->ymin)/this->dy;
+        int k0 = (z - this->zmin)/this->dz;
+
+        // Get the bin ranges to check for each dimension.
+        int istart = max(i0-1, 0);
+        int iend = min(i0+1, this->nx-1);
+        int jstart = max(j0-1, 0);
+        int jend = min(j0+1, this->ny-1);
+        int kstart = max(k0-1, 0);
+        int kend = min(k0+1, this->nz-1);
+
+        // Loop over neighbouring bins in the same order as
+        // get_neighbours_for_position. Only a strictly smaller distance
+        // replaces the current closest atom, so the first one of equally
+        // distant atoms is kept.
+        int closest = -1;
+        double closest_distance = 0;
+        double closest_displacement[3] = {0, 0, 0};
+        for (int i = istart; i <= iend; i++) {
+            for (int j = jstart; j <= jend; j++) {
+                for (int k = kstart; k <= kend; k++) {
+                    const vector<int>& binIndices = this->bins[i][j][k];
+                    for (auto &idx : binIndices) {
+                        double deltax = x - this->positions[idx][0];
+                        double deltay = y - this->positions[idx][1];
+                        double deltaz = z - this->positions[idx][2];
+                        double distance_squared = deltax*deltax + deltay*deltay + deltaz*deltaz;
+                        if (distance_squared <= this->cutoffSquared) {
+                            double distance = sqrt(distance_squared);
+                            if (closest == -1 || distance < closest_distance) {
+                                closest = idx;
+                                closest_distance = distance;
+                                closest_displacement[0] = deltax;
+                                closest_displacement[1] = deltay;
+                                closest_displacement[2] = deltaz;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (closest == -1) {
+            indices_mu(p) = -1;
+            distances_mu(p) = 0;
+            for (int d = 0; d < 3; ++d) {
+                displacements_mu(p, d) = 0;
+                factors_mu(p, d) = 0;
+            }
+        } else {
+            indices_mu(p) = this->indices[closest];
+            distances_mu(p) = closest_distance;
+            for (int d = 0; d < 3; ++d) {
+                displacements_mu(p, d) = closest_displacement[d];
+                factors_mu(p, d) = this->factors[closest][d];
+            }
+        }
+    }
+    return ClosestResult{indices_arr, distances_arr, displacements_arr, factors_arr};
 }
 
 CellListResult CellList::get_neighbours_for_index(const int idx)

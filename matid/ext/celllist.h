@@ -32,6 +32,17 @@ struct CellListResult {
 };
 
 /**
+ * The closest atom for each queried position. Positions without any atom
+ * within the cutoff have index -1.
+ */
+struct ClosestResult {
+    py::array_t<int> indices_original;  // shape (n,)
+    py::array_t<double> distances;      // shape (n,)
+    py::array_t<double> displacements;  // shape (n, 3): position - atom
+    py::array_t<double> factors;        // shape (n, 3)
+};
+
+/**
  * For calculating pairwise distances using a cell lists:
  * https://en.wikipedia.org/wiki/Cell_lists.
  */
@@ -53,6 +64,15 @@ class CellList {
          * @param z Cartesian z-coordinate.
          */
         CellListResult get_neighbours_for_position(const double x, const double y, const double z);
+        /**
+         * Get the closest atom within the radial cutoff distance for each of
+         * the given positions. Gives the same result as picking the first
+         * entry with the smallest distance from get_neighbours_for_position,
+         * but without building the full neighbour lists.
+         *
+         * @param positions Cartesian positions as an [n, 3] array.
+         */
+        ClosestResult get_closest_for_positions(py::array_t<double> positions);
         /**
          * Get the indices of atoms within the radial cutoff distance from the
          * given atomic index. The given index is not included in the returned

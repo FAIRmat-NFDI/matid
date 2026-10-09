@@ -51,7 +51,14 @@ PYBIND11_MODULE(ext, m) {
     py::class_<CellList>(m, "CellList", py::module_local())
         .def(py::init<py::array_t<double>, py::array_t<int>, py::array_t<double>, double>())
         .def("get_neighbours_for_index", &CellList::get_neighbours_for_index)
-        .def("get_neighbours_for_position", &CellList::get_neighbours_for_position);
+        .def("get_neighbours_for_position", &CellList::get_neighbours_for_position)
+        .def("get_closest_for_positions", &CellList::get_closest_for_positions);
+    py::class_<ClosestResult>(m, "ClosestResult", py::module_local())
+        .def(py::init<>())
+        .def_readonly("indices_original", &ClosestResult::indices_original)
+        .def_readonly("distances", &ClosestResult::distances)
+        .def_readonly("displacements", &ClosestResult::displacements)
+        .def_readonly("factors", &ClosestResult::factors);
     py::class_<CellListResult>(m, "CellListResult", py::module_local())
         .def(py::init<>())
         .def_readonly("indices", &CellListResult::indices)
