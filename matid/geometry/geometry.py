@@ -643,8 +643,12 @@ def get_matches(
         np.ndarray: for each searched position, an integer array representing
             the number of the periodic copy where the match was found.
     """
-    atomic_numbers = system.get_atomic_numbers()
-    system_positions = system.get_positions()
+    # The atomic numbers and positions are only read here, so the arrays are
+    # accessed directly instead of through the copying getters: this function
+    # is called once per searched unit cell and copying the full arrays every
+    # time makes the region search scale quadratically with system size.
+    atomic_numbers = system.numbers
+    system_positions = system.positions
     matches = []
     substitutions = []
     copy_indices = np.zeros((len(positions), 3))
@@ -684,7 +688,7 @@ def get_matches(
                 else:
                     substitution = Substitution(
                         closest_index,
-                        system_positions[closest_index],
+                        system_positions[closest_index].copy(),
                         atomic_number,
                         closest_atomic_number,
                     )
@@ -715,7 +719,7 @@ def get_matches_simple(system, cell_list, positions, numbers, tolerance):
     Returns:
         list: list of matched atoms or None is nothing was matched.
     """
-    atomic_numbers = system.get_atomic_numbers()
+    atomic_numbers = system.numbers
     cell = system.get_cell()
     pbc = system.get_pbc()
     matches = []

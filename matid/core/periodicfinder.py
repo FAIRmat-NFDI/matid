@@ -1597,7 +1597,7 @@ class PeriodicFinder:
             return new_cell, new_seed_indices, new_seed_pos, new_cell_indices
         else:
             used_points.add(seed_index)
-        orig_pos = system.get_positions()
+        orig_pos = system.positions
 
         # Filter out cells that have already been searched
         test_cell_indices = multipliers + cell_index
@@ -1639,8 +1639,10 @@ class PeriodicFinder:
             ):
                 multiplier_tuple = tuple(multiplier)
 
-                # Save the position corresponding to a seed atom or a guess for it.
-                i_seed_pos = seed_guess if match is None else orig_pos[match]
+                # Save the position corresponding to a seed atom or a guess for
+                # it. The row is copied so that it does not keep a reference to
+                # the full positions array of the system alive.
+                i_seed_pos = seed_guess if match is None else orig_pos[match].copy()
 
                 # Check if this index has already been used as a seed. The
                 # used_seed_indices is needed so that the same atom cannot
