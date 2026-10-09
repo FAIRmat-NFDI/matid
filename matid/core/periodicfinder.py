@@ -16,6 +16,26 @@ def inner1d(a, b):
     return (a * b).sum(axis=1)
 
 
+def get_region_cell_list(system, pos_tol):
+    """Creates the cell list that PeriodicFinder.get_region uses for matching
+    positions in the given system.
+
+    We cannot use the cell list that is created during the distance matrix
+    calculation, as it's radial cutoff is way too large (search becomes slow),
+    and it is not extended with the correct search size. Here the system is
+    extended using the position tolerance and the celllist cutoff is at most the
+    size of the position tolerance, but not too small to not take too much
+    time/memory to create.
+    """
+    return matid.geometry.get_cell_list(
+        system.get_positions(),
+        system.get_cell(),
+        system.get_pbc(),
+        pos_tol,
+        max(pos_tol, 1),
+    )
+
+
 class _PointGrid:
     """Spatial hash for answering "is there a stored point within the given
     tolerance" in constant time.
@@ -115,6 +135,7 @@ class PeriodicFinder:
         overlap_threshold=-0.6,
         distances: Distances = None,
         return_mask: bool = False,
+        cell_list=None,
     ):
         """Tries to find the periodic regions, like surfaces, in an atomic
         system.
@@ -134,6 +155,13 @@ class PeriodicFinder:
             overlap_threshold(float): Used to exclude non-physical cells by
                 checking overlap of atoms. Overlap between two atoms is calculated
                 by subtracting atomic radii from the distance between the atoms.
+            distances(Distances): Precalculated distance information.
+            return_mask(bool): Whether to also return the mask of atoms that
+                were tested during the search.
+            cell_list(CellList): A precalculated cell list for the system, as
+                returned by :func:`get_region_cell_list`. Can be given to avoid
+                recreating it when searching several regions in the same
+                system.
 
         Returns:
             linkedunitcollection or None: A LinkedUnitCollection object representing
@@ -148,20 +176,11 @@ class PeriodicFinder:
 
         self.distances = distances
 
-        # Create new cell list that is used for performing the matching. We
-        # cannot use the cell list that is created during the distance matrix
-        # calculation, as it's radial cutoff is way too large (search becomes
-        # slow), and it is not extended with the correct search size. Here the
-        # system is extended using the position tolerance and the celllist
-        # cutoff is at most the size of the position tolerance, but not too
-        # small to not take too much time/memory to create.
-        self.cell_list = matid.geometry.get_cell_list(
-            system.get_positions(),
-            system.get_cell(),
-            system.get_pbc(),
-            pos_tol,
-            max(pos_tol, 1),
-        )
+        # Create new cell list that is used for performing the matching, unless
+        # one is given.
+        if cell_list is None:
+            cell_list = get_region_cell_list(system, pos_tol)
+        self.cell_list = cell_list
 
         self.pos_tol = pos_tol
         self.max_cell_size = max_cell_size

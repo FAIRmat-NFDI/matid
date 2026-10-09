@@ -5,7 +5,7 @@ import ase.geometry
 
 import matid.geometry
 from matid.clustering.cluster import Cluster
-from matid.core.periodicfinder import PeriodicFinder
+from matid.core.periodicfinder import PeriodicFinder, get_region_cell_list
 
 
 class SBC:
@@ -133,6 +133,7 @@ class SBC:
 
         # Iteratively search for new clusters until whole system is covered
         periodic_finder = PeriodicFinder(angle_tol=angle_tol)
+        cell_list = get_region_cell_list(system_copy, pos_tol)
         indices = set(list(range(len(system_copy))))
         clusters = []
         while len(indices) != 0:
@@ -146,6 +147,7 @@ class SBC:
                 overlap_threshold=overlap_threshold,
                 distances=distances,
                 return_mask=True,
+                cell_list=cell_list,
             )
 
             # All neighbours that the periodic finder has tested are removed
@@ -294,15 +296,15 @@ class SBC:
         """
         # Get all overlapping atoms, and the regions with which they overlap
         overlap_map = defaultdict(list)
-        for i in range(len(system)):
-            for cluster in clusters:
-                if i in cluster.indices:
-                    overlap_map[i].append(cluster)
+        for cluster in clusters:
+            for i in set(cluster.indices):
+                overlap_map[int(i)].append(cluster)
 
         # Assign each overlapping atom to the cluster that is "nearest". Notice
-        # that we do not update the regions during the process.
-        # positions = system.get_positions()
-        for i, i_clusters in overlap_map.items():
+        # that we do not update the regions during the process. The atoms are
+        # processed in ascending index order.
+        for i in sorted(overlap_map):
+            i_clusters = overlap_map[i]
             if len(i_clusters) > 1:
                 surrounding_indices = set(
                     np.where(distances.get_radii_distance_row(i) < merge_radius)[0]
