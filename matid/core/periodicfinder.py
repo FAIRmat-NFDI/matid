@@ -1522,10 +1522,11 @@ class PeriodicFinder:
                 that are periodic
         """
         # Check if this cell has already been searched
-        if tuple(cell_index) in searched_cell_indices:
+        cell_index_tuple = tuple(np.asarray(cell_index).tolist())
+        if cell_index_tuple in searched_cell_indices:
             return
         else:
-            searched_cell_indices.add(tuple(cell_index))
+            searched_cell_indices.add(cell_index_tuple)
 
         # Try to get the scaled positions for atoms in this new cell. If the
         # cell is non-invertible, then this cell is not processed. The scaled
@@ -1762,13 +1763,15 @@ class PeriodicFinder:
                         target_cell = cell_index + multiplier
                         index_cell_map[match] = target_cell
 
-                    # Add an edge to the search graph
+                    # Add an edge to the search graph. The cell indices are
+                    # stored as tuples of python integers, which use less
+                    # memory than numpy scalars.
                     collection.add_search_edge(
-                        tuple(cell_index),
+                        tuple(np.asarray(cell_index).tolist()),
                         seed_index,
-                        tuple(target_cell),
+                        tuple(np.asarray(target_cell).tolist()),
                         match,
-                        multiplier,
+                        tuple(multiplier.tolist()),
                     )
 
                     if match in used_indices:
