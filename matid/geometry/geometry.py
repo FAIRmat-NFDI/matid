@@ -1209,9 +1209,9 @@ def get_distances(system: Atoms, radii="covalent", cutoff=float("inf")) -> Dista
         sparse = matid.ext.get_displacement_list(
             pos, np.asarray(cell), expand_pbc(pbc), float(cutoff)
         )
-        return Distances.from_sparse(
+        return Distances.from_csr(
             n_atoms,
-            np.asarray(sparse.row),
+            np.asarray(sparse.row_ptr),
             np.asarray(sparse.col),
             np.asarray(sparse.distance),
             np.asarray(sparse.displacement),

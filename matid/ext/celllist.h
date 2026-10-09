@@ -74,8 +74,10 @@ class CellList {
         );
         /**
          * Used to calculate a sparse minimum-image neighbour list within the
-         * cutoff. Results are appended into flat COO arrays (both pair
-         * directions are emitted). The diagonal is omitted.
+         * cutoff. Only the pairs (i, j) with j < i are appended into the flat
+         * arrays, ordered by i and then by j. The displacement is pos_i -
+         * pos_j and the factor is the periodic copy of j. The diagonal is
+         * omitted.
          */
         void get_displacement_list(
             py::array_t<int> original_indices,
@@ -84,7 +86,7 @@ class CellList {
             vector<int>& col,
             vector<double>& distance,
             vector<double>& displacement,
-            vector<double>& factor
+            vector<int>& factor
         );
         py::array_t<int> indices_py;
 

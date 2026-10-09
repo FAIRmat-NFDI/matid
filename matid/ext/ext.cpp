@@ -41,7 +41,7 @@ PYBIND11_MODULE(ext, m) {
     m.def("get_displacement_list", &get_displacement_list, "Get a sparse minimum-image neighbour list within a finite cutoff.");
     py::class_<SparseDistances>(m, "SparseDistances", py::module_local())
         .def(py::init<>())
-        .def_readonly("row", &SparseDistances::row)
+        .def_readonly("row_ptr", &SparseDistances::row_ptr)
         .def_readonly("col", &SparseDistances::col)
         .def_readonly("distance", &SparseDistances::distance)
         .def_readonly("displacement", &SparseDistances::displacement)

@@ -68,6 +68,32 @@ class Distances:
         self._row_ptr = np.searchsorted(sorted_row, np.arange(n + 1))
         return self
 
+    @classmethod
+    def from_csr(cls, n, row_ptr, col, distance, displacement, factor, radii):
+        """Construct a sparse-backed Distances from a CSR neighbour list, where
+        the neighbours of atom ``i`` are stored in the slice
+        ``row_ptr[i]:row_ptr[i + 1]``. The arrays are used as is, without
+        copying.
+
+        Args:
+            n: Number of atoms.
+            row_ptr: Row offsets, shape (n + 1,).
+            col, distance, displacement, factor: Neighbour data in the same
+                format as for :meth:`from_sparse`, grouped by row.
+            radii: Per-atom radii, shape (n,).
+        """
+        self = cls.__new__(cls)
+        self._dense = False
+        self._n = n
+        self._radii = np.asarray(radii)
+        self.cell_list = None
+        self._row_ptr = np.asarray(row_ptr)
+        self._col = np.asarray(col)
+        self._dist = np.asarray(distance)
+        self._disp = np.asarray(displacement)
+        self._fac = np.asarray(factor)
+        return self
+
     # ------------------------------------------------------------------
     # Dense matrix properties (only valid in dense / infinite-cutoff mode).
     # ------------------------------------------------------------------
