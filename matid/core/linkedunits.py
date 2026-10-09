@@ -32,12 +32,39 @@ class LinkedUnitCollection(dict):
         self.system = system
         self.cell = cell
         self.is_2d = is_2d
-        self._search_graph = nx.MultiDiGraph()
+        self._search_graph_cache = nx.MultiDiGraph()
+        self._search_graph_log = []
+        self._search_graph_n_replayed = 0
         self._index_cell_map = {}
         self._used_points = set()
         self._basis_indices = None
         self._pos_tol = None
         dict.__init__(self)
+
+    def add_search_edge(self, cell_index, seed_index, target_cell, match, multiplier):
+        """Records a link between two cells that was found during the search.
+
+        Creating the networkx graph is comparatively expensive and it is not
+        needed by all users. The links are therefore only recorded here and
+        the graph is created on demand when _search_graph is accessed.
+        """
+        self._search_graph_log.append(
+            (cell_index, seed_index, target_cell, match, multiplier)
+        )
+
+    @property
+    def _search_graph(self):
+        """A networkx.MultiDiGraph of the links between the cells that were
+        found during the search."""
+        G = self._search_graph_cache
+        log = self._search_graph_log
+        for i in range(self._search_graph_n_replayed, len(log)):
+            cell_index, seed_index, target_cell, match, multiplier = log[i]
+            G.add_node(cell_index, index=seed_index)
+            G.add_node(target_cell, index=match)
+            G.add_edge(cell_index, target_cell, multiplier=multiplier)
+        self._search_graph_n_replayed = len(log)
+        return G
 
     def __setitem__(self, key, value):
         # Transform key to tuple, check length

@@ -318,6 +318,29 @@ def get_clusters(dist_matrix, threshold, min_samples=1):
     return [list(component) for component in nx.connected_components(graph)]
 
 
+def get_clusters_from_edges(n, rows, cols):
+    """Used to detect clusters, i.e. connected components, from a sparse list
+    of connections.
+
+    Gives identical results to :func:`get_clusters` when given the pairs
+    ``(i, j)``, ``i <= j``, for which ``dist_matrix[i, j] <= threshold`` in
+    row-major order, but without requiring the dense ``n x n`` matrix.
+
+    Args:
+        n(int): Number of nodes.
+        rows(np.ndarray): First node index of each connection.
+        cols(np.ndarray): Second node index of each connection.
+
+    Returns:
+        list: A list of clusters, where each cluster is a list of indices for
+        the elements belonging to the cluster.
+    """
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n))
+    graph.add_edges_from(zip(np.asarray(rows).tolist(), np.asarray(cols).tolist()))
+    return [list(component) for component in nx.connected_components(graph)]
+
+
 def get_covalent_distances(system, mic=True):
     """Returns a distance matrix where the covalent radii have been taken into
     account. Clips negative values to be zero.
@@ -618,6 +641,30 @@ def get_positions_within_basis(
     return indices, cell_pos, factors
 
 
+def _get_closest(cell_list, positions, return_displacements=False):
+    """Returns the closest atom for each of the given positions using the given
+    cell list. Positions without any atoms within the cell list cutoff get the
+    index -1.
+
+    Returns:
+        np.ndarray: Original indices of the closest atoms.
+        np.ndarray: Distances to the closest atoms.
+        np.ndarray: Periodic copy factors of the closest atoms.
+        np.ndarray: Displacements (position - atom) to the closest atoms, only
+            if return_displacements is True.
+    """
+    positions = np.ascontiguousarray(positions, dtype=np.float64).reshape(-1, 3)
+    result = cell_list.get_closest_for_positions(positions)
+    closest = (
+        np.asarray(result.indices_original),
+        np.asarray(result.distances),
+        np.asarray(result.factors),
+    )
+    if return_displacements:
+        closest += (np.asarray(result.displacements),)
+    return closest
+
+
 def get_matches(
     system, cell_list, positions, numbers, tolerance, return_vacancies=True
 ):
@@ -643,12 +690,12 @@ def get_matches(
         np.ndarray: for each searched position, an integer array representing
             the number of the periodic copy where the match was found.
     """
-    atomic_numbers = system.get_atomic_numbers()
-    system_positions = system.get_positions()
-    matches = []
-    substitutions = []
-    copy_indices = np.zeros((len(positions), 3))
-    vacancies = []
+    # The atomic numbers and positions are only read here, so the arrays are
+    # accessed directly instead of through the copying getters: this function
+    # is called once per searched unit cell and copying the full arrays every
+    # time makes the region search scale quadratically with system size.
+    atomic_numbers = system.numbers
+    system_positions = system.positions
     cell = system.get_cell()
 
     # Scaled positions (floored) are only needed for the copy index of the
@@ -658,46 +705,38 @@ def get_matches(
     if return_vacancies:
         floored_factors = np.floor(to_scaled(cell, positions, wrap=False))
 
-    # The already pre-computed cell-list is used in finding neighbours.
-    for i, (position, atomic_number) in enumerate(zip(positions, numbers)):
+    # The already pre-computed cell-list is used for finding the closest atom
+    # for all positions at once.
+    closest_index, closest_distance, closest_factor = _get_closest(cell_list, positions)
+    found = (closest_index >= 0) & (closest_distance <= tolerance)
+    closest_number = atomic_numbers[np.where(found, closest_index, 0)]
+
+    matches = []
+    substitutions = []
+    vacancies = []
+    # When vacancies are not requested, the vacancy copy index is left at its
+    # initialized zero value (it is never consumed by such callers).
+    copy_indices = np.zeros((len(positions), 3))
+    for i in range(len(positions)):
         match = None
         substitution = None
-        copy_index = None
-        displacement = None
-        cell_list_result = cell_list.get_neighbours_for_position(
-            position[0], position[1], position[2]
-        )
-        indices = cell_list_result.indices_original
-        if len(indices) > 0:
-            distances = cell_list_result.distances
-            factors = cell_list_result.factors
-            min_distance_index = np.argmin(distances)
-            closest_distance = distances[min_distance_index]
-            closest_factor = factors[min_distance_index]
-            closest_index = indices[min_distance_index]
-            if closest_distance <= tolerance:
-                closest_atomic_number = atomic_numbers[closest_index]
-                copy_index = closest_factor
-                if closest_atomic_number == atomic_number:
-                    match = closest_index
-                    substitution = None
-                else:
-                    substitution = Substitution(
-                        closest_index,
-                        system_positions[closest_index],
-                        atomic_number,
-                        closest_atomic_number,
-                    )
+        if found[i]:
+            closest = int(closest_index[i])
+            copy_indices[i] = closest_factor[i]
+            if closest_number[i] == numbers[i]:
+                match = closest
+            else:
+                substitution = Substitution(
+                    closest,
+                    system_positions[closest].copy(),
+                    numbers[i],
+                    closest_number[i],
+                )
+        elif return_vacancies:
+            vacancies.append(Atom(numbers[i], position=positions[i]))
+            copy_indices[i] = floored_factors[i]
         matches.append(match)
         substitutions.append(substitution)
-        if match is None and substitution is None:
-            if return_vacancies:
-                vacancies.append(Atom(atomic_number, position=position))
-                copy_index = floored_factors[i]
-        # When vacancies are not requested, the vacancy copy index is left at
-        # its initialized zero value (it is never consumed by such callers).
-        if copy_index is not None:
-            copy_indices[i] = copy_index
 
     return matches, substitutions, vacancies, copy_indices
 
@@ -715,30 +754,23 @@ def get_matches_simple(system, cell_list, positions, numbers, tolerance):
     Returns:
         list: list of matched atoms or None is nothing was matched.
     """
-    atomic_numbers = system.get_atomic_numbers()
+    atomic_numbers = system.numbers
     cell = system.get_cell()
     pbc = system.get_pbc()
+    wrapped_positions = ase.geometry.wrap_positions(positions, cell, pbc)
+    closest_index, closest_distance, _, closest_displacement = _get_closest(
+        cell_list, wrapped_positions, return_displacements=True
+    )
     matches = []
     displacements = []
-    wrapped_positions = ase.geometry.wrap_positions(positions, cell, pbc)
-
-    for wrapped_position, atomic_number in zip(wrapped_positions, numbers):
+    for i, atomic_number in enumerate(numbers):
         match = None
         displacement = None
-        cell_list_result = cell_list.get_neighbours_for_position(
-            wrapped_position[0], wrapped_position[1], wrapped_position[2]
-        )
-        indices = cell_list_result.indices_original
-        if len(indices) > 0:
-            distances = cell_list_result.distances
-            min_distance_index = np.argmin(distances)
-            closest_distance = distances[min_distance_index]
-            closest_index = indices[min_distance_index]
-            if closest_distance <= tolerance:
-                closest_atomic_number = atomic_numbers[closest_index]
-                if closest_atomic_number == atomic_number:
-                    match = closest_index
-                    displacement = cell_list_result.displacements[min_distance_index]
+        index = closest_index[i]
+        if index >= 0 and closest_distance[i] <= tolerance:
+            if atomic_numbers[index] == atomic_number:
+                match = int(index)
+                displacement = closest_displacement[i].tolist()
         matches.append(match)
         displacements.append(displacement)
 
@@ -1182,9 +1214,9 @@ def get_distances(system: Atoms, radii="covalent", cutoff=float("inf")) -> Dista
         sparse = matid.ext.get_displacement_list(
             pos, np.asarray(cell), expand_pbc(pbc), float(cutoff)
         )
-        return Distances.from_sparse(
+        return Distances.from_csr(
             n_atoms,
-            np.asarray(sparse.row),
+            np.asarray(sparse.row_ptr),
             np.asarray(sparse.col),
             np.asarray(sparse.distance),
             np.asarray(sparse.displacement),
