@@ -50,7 +50,9 @@ dev = [
 include = ["matid*"]
 exclude = ["tests*"]
 
-[tool.cibuildwheel]
+# Only smoke test on manylinux: other platforms lack wheels for some dependencies.
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_*"
 test-command = "python -c \"import matid, matid.ext\""
 
 [tool.ruff]
