@@ -1,0 +1,51 @@
+# Builds the documentation and publishes it to the gh-pages branch whenever a
+# commit lands on main.
+
+name: docs
+
+on:
+  push:
+    branches: [ "main"]
+
+permissions:
+  contents: write
+
+# Only the newest commit needs to be published
+concurrency:
+  group: docs
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.12"
+    - name: Install pydoc-markdown
+      run: pip install pydoc-markdown==4.8.2
+    # -e makes a failing pydoc-markdown stop the run instead of publishing
+    # empty reference pages
+    - name: Regenerate API reference
+      working-directory: scripts
+      run: bash -e doc_reference.sh
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+        cache: yarn
+        cache-dependency-path: docs/yarn.lock
+    - name: Install dependencies
+      working-directory: docs
+      run: yarn install --frozen-lockfile
+    - name: Build and deploy
+      working-directory: docs
+      env:
+        GIT_USER: x-access-token
+        GIT_PASS: ${{ secrets.GITHUB_TOKEN }}
+        GIT_USER_NAME: github-actions[bot]
+        GIT_USER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      run: yarn deploy

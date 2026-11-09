@@ -138,7 +138,7 @@ const config = {
               },
               {
                 label: 'NOMAD',
-                href: 'https://nomad-lab.eu/nomad-lab/',
+                href: 'https://about.nomad-lab.eu',
               },
             ],
           },

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel", "pybind11~=2.13.6"]
+requires = ["setuptools>=77.0.0", "wheel", "pybind11~=2.13.6"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = '2.3.0'
 description = 'MatID is a Python package for identifying and analyzing atomistic systems based on their structure.'
 readme = "README.md"
 authors = [{ name = "Lauri Himanen" }]
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
@@ -20,7 +21,6 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Physics",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
