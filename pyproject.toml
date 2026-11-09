@@ -50,6 +50,9 @@ dev = [
 include = ["matid*"]
 exclude = ["tests*"]
 
+[tool.cibuildwheel]
+test-command = "python -c \"import matid, matid.ext\""
+
 [tool.ruff]
 include = ["matid/*.py", "tests/*.py"]
 
