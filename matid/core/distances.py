@@ -68,6 +68,32 @@ class Distances:
         self._row_ptr = np.searchsorted(sorted_row, np.arange(n + 1))
         return self
 
+    @classmethod
+    def from_csr(cls, n, row_ptr, col, distance, displacement, factor, radii):
+        """Construct a sparse-backed Distances from a CSR neighbour list, where
+        the neighbours of atom ``i`` are stored in the slice
+        ``row_ptr[i]:row_ptr[i + 1]``. The arrays are used as is, without
+        copying.
+
+        Args:
+            n: Number of atoms.
+            row_ptr: Row offsets, shape (n + 1,).
+            col, distance, displacement, factor: Neighbour data in the same
+                format as for :meth:`from_sparse`, grouped by row.
+            radii: Per-atom radii, shape (n,).
+        """
+        self = cls.__new__(cls)
+        self._dense = False
+        self._n = n
+        self._radii = np.asarray(radii)
+        self.cell_list = None
+        self._row_ptr = np.asarray(row_ptr)
+        self._col = np.asarray(col)
+        self._dist = np.asarray(distance)
+        self._disp = np.asarray(displacement)
+        self._fac = np.asarray(factor)
+        return self
+
     # ------------------------------------------------------------------
     # Dense matrix properties (only valid in dense / infinite-cutoff mode).
     # ------------------------------------------------------------------
@@ -166,3 +192,47 @@ class Distances:
         di = np.arange(k)
         out[di, di] = -2.0 * self._radii[indices]
         return out
+
+    def get_radii_distance_edges(self, indices, threshold):
+        """Returns the local index pairs ``(li, lj)`` with ``li <= lj`` for which
+        ``dist_matrix_radii_mic[np.ix_(indices, indices)] <= threshold``,
+        including the diagonal. The pairs are returned in row-major order.
+
+        This is a sparse alternative to :meth:`get_radii_distance_submatrix`
+        for finding connectivity within a large group of atoms: the memory
+        footprint scales with the number of connected pairs instead of the
+        square of the number of atoms.
+
+        Returns:
+            Two integer arrays ``(li, lj)``.
+        """
+        indices = np.asarray(indices, dtype=np.intp)
+        k = len(indices)
+        if self._dense:
+            submatrix = self._dist_matrix_radii_mic[np.ix_(indices, indices)]
+            li, lj = np.nonzero(np.triu(submatrix <= threshold))
+            return li, lj
+
+        # Gather the neighbour list entries of all requested rows at once.
+        g2l = np.full(self._n, -1, dtype=np.intp)
+        g2l[indices] = np.arange(k)
+        starts = self._row_ptr[indices]
+        lengths = self._row_ptr[indices + 1] - starts
+        li = np.repeat(np.arange(k), lengths)
+        offsets = np.cumsum(lengths) - lengths
+        entries = np.arange(lengths.sum()) + np.repeat(starts - offsets, lengths)
+        cols = self._col[entries]
+        lj = g2l[cols]
+        sel = lj > li
+        li, lj, gi, cols = li[sel], lj[sel], indices[li[sel]], cols[sel]
+        dist = self._dist[entries[sel]] - (self._radii[gi] + self._radii[cols])
+        sel = dist <= threshold
+        li, lj = li[sel], lj[sel]
+
+        # Add the diagonal and order the pairs row-major.
+        diag = np.arange(k)
+        diag = diag[-2.0 * self._radii[indices] <= threshold]
+        li = np.concatenate((li, diag))
+        lj = np.concatenate((lj, diag))
+        order = np.lexsort((lj, li))
+        return li[order], lj[order]

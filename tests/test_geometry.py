@@ -753,3 +753,31 @@ def test_minimize_cell(system, axis, minimum_size, expected_cell, expected_pos):
 def test_thickness(system, axis, expected_thickness):
     thickness = matid.geometry.get_thickness(system, axis)
     assert thickness == expected_thickness
+
+
+@pytest.mark.parametrize("threshold", [0.3, 0.65, 1.5])
+@pytest.mark.parametrize("pbc", [True, False])
+def test_radii_distance_edges(threshold, pbc):
+    """The sparse connectivity used for cleaning clusters should match the
+    dense distance submatrix route exactly, including the cluster ordering."""
+    rng = np.random.default_rng(7)
+    n_atoms = 300
+    a = 15.0
+    system = Atoms(
+        symbols=["Cu"] * n_atoms,
+        scaled_positions=rng.random((n_atoms, 3)),
+        cell=[a, a, a],
+        pbc=pbc,
+    )
+    radii = matid.geometry.get_radii("covalent", system.get_atomic_numbers())
+    distances = matid.geometry.get_distances(system, radii, cutoff=6.0)
+    for k in [1, 50, n_atoms]:
+        indices = rng.permutation(n_atoms)[:k]
+        submatrix = distances.get_radii_distance_submatrix(indices)
+        rows, cols = distances.get_radii_distance_edges(indices, threshold)
+        expected = np.nonzero(np.triu(submatrix <= threshold))
+        assert np.array_equal(rows, expected[0])
+        assert np.array_equal(cols, expected[1])
+        assert matid.geometry.get_clusters_from_edges(
+            k, rows, cols
+        ) == matid.geometry.get_clusters(submatrix, threshold)

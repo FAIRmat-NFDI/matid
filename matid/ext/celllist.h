@@ -32,6 +32,17 @@ struct CellListResult {
 };
 
 /**
+ * The closest atom for each queried position. Positions without any atom
+ * within the cutoff have index -1.
+ */
+struct ClosestResult {
+    py::array_t<int> indices_original;  // shape (n,)
+    py::array_t<double> distances;      // shape (n,)
+    py::array_t<double> displacements;  // shape (n, 3): position - atom
+    py::array_t<double> factors;        // shape (n, 3)
+};
+
+/**
  * For calculating pairwise distances using a cell lists:
  * https://en.wikipedia.org/wiki/Cell_lists.
  */
@@ -54,6 +65,15 @@ class CellList {
          */
         CellListResult get_neighbours_for_position(const double x, const double y, const double z);
         /**
+         * Get the closest atom within the radial cutoff distance for each of
+         * the given positions. Gives the same result as picking the first
+         * entry with the smallest distance from get_neighbours_for_position,
+         * but without building the full neighbour lists.
+         *
+         * @param positions Cartesian positions as an [n, 3] array.
+         */
+        ClosestResult get_closest_for_positions(py::array_t<double> positions);
+        /**
          * Get the indices of atoms within the radial cutoff distance from the
          * given atomic index. The given index is not included in the returned
          * values.
@@ -74,8 +94,10 @@ class CellList {
         );
         /**
          * Used to calculate a sparse minimum-image neighbour list within the
-         * cutoff. Results are appended into flat COO arrays (both pair
-         * directions are emitted). The diagonal is omitted.
+         * cutoff. Only the pairs (i, j) with j < i are appended into the flat
+         * arrays, ordered by i and then by j. The displacement is pos_i -
+         * pos_j and the factor is the periodic copy of j. The diagonal is
+         * omitted.
          */
         void get_displacement_list(
             py::array_t<int> original_indices,
@@ -84,7 +106,7 @@ class CellList {
             vector<int>& col,
             vector<double>& distance,
             vector<double>& displacement,
-            vector<double>& factor
+            vector<int>& factor
         );
         py::array_t<int> indices_py;
 

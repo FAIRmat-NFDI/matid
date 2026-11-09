@@ -1,9 +1,11 @@
 import itertools
+import math
 from collections import deque, defaultdict, OrderedDict
 
 import numpy as np
 import networkx as nx
 from ase import Atoms
+import ase.geometry
 
 import matid.geometry
 from matid.data import constants
@@ -14,6 +16,104 @@ from matid.utils.exceptions import MatIDError
 
 def inner1d(a, b):
     return (a * b).sum(axis=1)
+
+
+def get_region_cell_list(system, pos_tol):
+    """Creates the cell list that PeriodicFinder.get_region uses for matching
+    positions in the given system.
+
+    We cannot use the cell list that is created during the distance matrix
+    calculation, as it's radial cutoff is way too large (search becomes slow),
+    and it is not extended with the correct search size. Here the system is
+    extended using the position tolerance and the celllist cutoff is at most the
+    size of the position tolerance, but not too small to not take too much
+    time/memory to create.
+    """
+    return matid.geometry.get_cell_list(
+        system.get_positions(),
+        system.get_cell(),
+        system.get_pbc(),
+        pos_tol,
+        max(pos_tol, 1),
+    )
+
+
+def _combinations_3(n):
+    """Returns all index triplets i < j < k from range(n) in lexicographic
+    order as an [m, 3] array. Identical to
+    np.array(list(itertools.combinations(range(n), 3))) for n >= 3, but avoids
+    creating a Python tuple for each of the O(n^3) combinations.
+    """
+    i, j = np.triu_indices(n, k=1)
+    counts = n - 1 - j
+    total = counts.sum()
+    first = np.repeat(i, counts)
+    second = np.repeat(j, counts)
+    offsets = np.cumsum(counts) - counts
+    third = np.arange(total) + np.repeat(j + 1 - offsets, counts)
+    return np.stack((first, second, third), axis=1).astype(np.int64)
+
+
+class _PointGrid:
+    """Spatial hash for answering "is there a stored point within the given
+    tolerance" in constant time.
+
+    Replaces a linear scan over all stored points, which made the vacancy
+    bookkeeping of the region search scale quadratically with the number of
+    vacancies. The answers are identical to the linear scan: any point within
+    ``tol`` of the query lies in one of the 27 buckets surrounding it.
+    """
+
+    def __init__(self, tol):
+        self.tol = tol
+        self.bucket_size = tol if tol > 0 else 1e-12
+        self.buckets = defaultdict(list)
+        self.n_points = 0
+        # The linear scan used ``distances.min() > tol``. A stored non-finite
+        # position turns that minimum into nan, after which no point is
+        # considered new anymore. This flag reproduces that behaviour.
+        self.has_nonfinite = False
+
+    def __len__(self):
+        return self.n_points
+
+    def _key(self, x, y, z):
+        b = self.bucket_size
+        return (math.floor(x / b), math.floor(y / b), math.floor(z / b))
+
+    def is_new(self, position):
+        """Returns True if no stored point is within the tolerance."""
+        if self.n_points == 0:
+            return True
+        x, y, z = position.tolist()
+        if self.has_nonfinite or not (
+            math.isfinite(x) and math.isfinite(y) and math.isfinite(z)
+        ):
+            return False
+        kx, ky, kz = self._key(x, y, z)
+        tol = self.tol
+        buckets = self.buckets
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    bucket = buckets.get((kx + dx, ky + dy, kz + dz))
+                    if bucket is None:
+                        continue
+                    for px, py, pz in bucket:
+                        ex = px - x
+                        ey = py - y
+                        ez = pz - z
+                        if math.sqrt(ex * ex + ey * ey + ez * ez) <= tol:
+                            return False
+        return True
+
+    def add(self, position):
+        self.n_points += 1
+        x, y, z = position.tolist()
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+            self.has_nonfinite = True
+            return
+        self.buckets[self._key(x, y, z)].append((x, y, z))
 
 
 # These are the directions in which the recursive search can progress into. Note
@@ -28,6 +128,9 @@ multipliers_2d_directions = np.array(
     list(itertools.product([0, 1, -1], [0, 1, -1], repeat=1))
 )
 multipliers_2d[:, 0:2] = multipliers_2d_directions[1:]
+
+# Maps the multipliers of the cell basis vectors to the basis vector index.
+basis_multiplier_axis = {(1, 0, 0): 0, (0, 1, 0): 1, (0, 0, 1): 2}
 
 
 class PeriodicFinder:
@@ -64,6 +167,7 @@ class PeriodicFinder:
         overlap_threshold=-0.6,
         distances: Distances = None,
         return_mask: bool = False,
+        cell_list=None,
     ):
         """Tries to find the periodic regions, like surfaces, in an atomic
         system.
@@ -83,6 +187,13 @@ class PeriodicFinder:
             overlap_threshold(float): Used to exclude non-physical cells by
                 checking overlap of atoms. Overlap between two atoms is calculated
                 by subtracting atomic radii from the distance between the atoms.
+            distances(Distances): Precalculated distance information.
+            return_mask(bool): Whether to also return the mask of atoms that
+                were tested during the search.
+            cell_list(CellList): A precalculated cell list for the system, as
+                returned by :func:`get_region_cell_list`. Can be given to avoid
+                recreating it when searching several regions in the same
+                system.
 
         Returns:
             linkedunitcollection or None: A LinkedUnitCollection object representing
@@ -97,20 +208,11 @@ class PeriodicFinder:
 
         self.distances = distances
 
-        # Create new cell list that is used for performing the matching. We
-        # cannot use the cell list that is created during the distance matrix
-        # calculation, as it's radial cutoff is way too large (search becomes
-        # slow), and it is not extended with the correct search size. Here the
-        # system is extended using the position tolerance and the celllist
-        # cutoff is at most the size of the position tolerance, but not too
-        # small to not take too much time/memory to create.
-        self.cell_list = matid.geometry.get_cell_list(
-            system.get_positions(),
-            system.get_cell(),
-            system.get_pbc(),
-            pos_tol,
-            max(pos_tol, 1),
-        )
+        # Create new cell list that is used for performing the matching, unless
+        # one is given.
+        if cell_list is None:
+            cell_list = get_region_cell_list(system, pos_tol)
+        self.cell_list = cell_list
 
         self.pos_tol = pos_tol
         self.max_cell_size = max_cell_size
@@ -1118,8 +1220,7 @@ class PeriodicFinder:
         angle_thres_sin = abs(np.sin(angle_threshold))
 
         # Create combinations of normed spans
-        span_indices = range(len(valid_spans))
-        combo_indices = np.array(list(itertools.combinations(span_indices, 3)))
+        combo_indices = _combinations_3(len(valid_spans))
         normed_combos = norm_spans[combo_indices]
 
         # Create arrays containing the three angles for each combination. The
@@ -1302,7 +1403,7 @@ class PeriodicFinder:
 
         searched_cell_indices = set()
         used_indices = set()
-        searched_vacancy_positions = []
+        searched_vacancy_positions = _PointGrid(self.pos_tol)
         queue = deque()
         collection = LinkedUnitCollection(
             system,
@@ -1311,6 +1412,15 @@ class PeriodicFinder:
         )
         multipliers = self._get_multipliers(periodic_indices)
 
+        # The cells are passed around as (basis, cartesian positions, atomic
+        # numbers) instead of ase.Atoms, which are comparatively expensive to
+        # create for every searched cell.
+        unit_cell_data = (
+            np.array(unit_cell.get_cell()),
+            unit_cell.get_positions(),
+            unit_cell.get_atomic_numbers(),
+        )
+
         # Start off the queue
         self._find_region_rec(
             system,
@@ -1318,7 +1428,7 @@ class PeriodicFinder:
             seed_index,
             seed_pos,
             seed_number,
-            unit_cell,
+            unit_cell_data,
             seed_position,
             searched_cell_indices,
             (0, 0, 0),
@@ -1401,7 +1511,8 @@ class PeriodicFinder:
             seed_index(int): Index of the seed atom in the original system.
             seed_pos(np.ndarray): Position of the seed atom in cartesian coordinates.
             seed_atomic_number(int): Atomic number of the seed atom.
-            unit_cell(ASE.Atoms): The current guess for the unit cell.
+            unit_cell(tuple): The current guess for the unit cell as a tuple
+                of (basis, cartesian positions, atomic numbers).
             seed_offset(np.ndrray): Cartesian offset of the seed atom from the unit cell
                 origin.
             searched_cell_indices(set): Set of 3D indices that have been searched.
@@ -1411,22 +1522,25 @@ class PeriodicFinder:
                 that are periodic
         """
         # Check if this cell has already been searched
-        if tuple(cell_index) in searched_cell_indices:
+        cell_index_tuple = tuple(np.asarray(cell_index).tolist())
+        if cell_index_tuple in searched_cell_indices:
             return
         else:
-            searched_cell_indices.add(tuple(cell_index))
+            searched_cell_indices.add(cell_index_tuple)
 
         # Try to get the scaled positions for atoms in this new cell. If the
-        # cell is non-invertible, then this cell is not processed.
+        # cell is non-invertible, then this cell is not processed. The scaled
+        # positions are calculated in the same way as in
+        # ase.Atoms.get_scaled_positions(wrap=False): wrapping is here disabled
+        # because it does not handle well values that are negative within
+        # machine precision.
+        old_basis, unit_cell_pos, cell_num = unit_cell
         try:
-            # Wrapping is here disabled because it does not handle well values
-            # that are negative within machine precision.
-            cell_pos = unit_cell.get_scaled_positions(wrap=False)
+            cell_pos = np.linalg.solve(
+                ase.geometry.complete_cell(old_basis).T, unit_cell_pos.T
+            ).T
         except Exception:
             return
-
-        cell_num = unit_cell.get_atomic_numbers()
-        old_basis = unit_cell.get_cell()
 
         new_seed_indices = []
         new_seed_pos = []
@@ -1435,7 +1549,7 @@ class PeriodicFinder:
         orig_pbc = system.get_pbc()
 
         # Translate and wrap the searched positions
-        test_pos = unit_cell.get_positions() - seed_offset + seed_pos
+        test_pos = unit_cell_pos - seed_offset + seed_pos
         test_pos = matid.geometry.to_scaled(
             orig_cell, test_pos, pbc=orig_pbc, wrap=True
         )
@@ -1473,18 +1587,13 @@ class PeriodicFinder:
         # before.
         new_vacancy_pos = []
         valid_vacancies = []
-        vacancy_pos_array = np.array(searched_vacancy_positions)
         for vacancy in vacancies:
             # Check if this vacancy has already been found
-            if len(searched_vacancy_positions) != 0:
-                vac_dist = np.linalg.norm(vacancy_pos_array - vacancy.position, axis=1)
-                if vac_dist.min() > self.pos_tol:
-                    new_vacancy_pos.append(vacancy.position)
-                    valid_vacancies.append(vacancy)
-            else:
+            if searched_vacancy_positions.is_new(vacancy.position):
                 new_vacancy_pos.append(vacancy.position)
                 valid_vacancies.append(vacancy)
-        searched_vacancy_positions.extend(new_vacancy_pos)
+        for position in new_vacancy_pos:
+            searched_vacancy_positions.add(position)
 
         # Find the neighbouring cells for extending the search
         dislocations = np.dot(multipliers, old_basis)
@@ -1505,7 +1614,7 @@ class PeriodicFinder:
             cell_index,
             searched_cell_indices,
             collection._used_points,
-            collection._search_graph,
+            collection,
             collection._index_cell_map,
         )
 
@@ -1522,19 +1631,11 @@ class PeriodicFinder:
         )
         collection[cell_index] = new_unit
 
-        # Save the updated cell shape for the new cells in the queue. If the
-        # found system is invalid, the result is ignored.
-        try:
-            new_sys = Atoms(
-                cell=new_cell,
-                scaled_positions=cell_pos,
-                symbols=cell_num,
-                pbc=unit_cell.get_pbc(),
-            )
-        except Exception:
-            return
-
-        cells = len(new_seed_pos) * [new_sys]
+        # Save the updated cell shape for the new cells in the queue. The
+        # positions are calculated from the scaled positions in the same way
+        # as when creating an ase.Atoms with scaled_positions.
+        new_unit_cell = (new_cell, np.dot(cell_pos, new_cell), cell_num)
+        cells = len(new_seed_pos) * [new_unit_cell]
 
         # Add the found neighbours to a queue
         queue.extend(list(zip(new_seed_indices, new_seed_pos, new_cell_indices, cells)))
@@ -1552,7 +1653,7 @@ class PeriodicFinder:
         cell_index,
         searched_cell_indices,
         used_points,
-        search_graph,
+        collection,
         index_cell_map,
     ):
         """When given a prototype unit cell shape and a set of search
@@ -1597,7 +1698,7 @@ class PeriodicFinder:
             return new_cell, new_seed_indices, new_seed_pos, new_cell_indices
         else:
             used_points.add(seed_index)
-        orig_pos = system.get_positions()
+        orig_pos = system.positions
 
         # Filter out cells that have already been searched
         test_cell_indices = multipliers + cell_index
@@ -1639,8 +1740,10 @@ class PeriodicFinder:
             ):
                 multiplier_tuple = tuple(multiplier)
 
-                # Save the position corresponding to a seed atom or a guess for it.
-                i_seed_pos = seed_guess if match is None else orig_pos[match]
+                # Save the position corresponding to a seed atom or a guess for
+                # it. The row is copied so that it does not keep a reference to
+                # the full positions array of the system alive.
+                i_seed_pos = seed_guess if match is None else orig_pos[match].copy()
 
                 # Check if this index has already been used as a seed. The
                 # used_seed_indices is needed so that the same atom cannot
@@ -1660,11 +1763,15 @@ class PeriodicFinder:
                         target_cell = cell_index + multiplier
                         index_cell_map[match] = target_cell
 
-                    # Add an edge to the search graph
-                    search_graph.add_node(tuple(cell_index), index=seed_index)
-                    search_graph.add_node(tuple(target_cell), index=match)
-                    search_graph.add_edge(
-                        tuple(cell_index), tuple(target_cell), multiplier=multiplier
+                    # Add an edge to the search graph. The cell indices are
+                    # stored as tuples of python integers, which use less
+                    # memory than numpy scalars.
+                    collection.add_search_edge(
+                        tuple(np.asarray(cell_index).tolist()),
+                        seed_index,
+                        tuple(np.asarray(target_cell).tolist()),
+                        match,
+                        tuple(multiplier.tolist()),
                     )
 
                     if match in used_indices:
@@ -1681,14 +1788,11 @@ class PeriodicFinder:
                 # Update the cell basis vector based on the found match. TODO:
                 # This displacement correction may have unwanted effects in
                 # noisy systems.
-                for i in range(3):
-                    basis_mult = [0, 0, 0]
-                    basis_mult[i] = 1
-                    basis_mult = tuple(basis_mult)
-                    if multiplier_tuple == basis_mult:
-                        i_basis = disloc
-                        if match:
-                            i_basis -= np.array(displacement)
-                        new_cell[i, :] = i_basis
+                i = basis_multiplier_axis.get(multiplier_tuple)
+                if i is not None:
+                    i_basis = disloc
+                    if match:
+                        i_basis -= np.array(displacement)
+                    new_cell[i, :] = i_basis
 
         return new_cell, new_seed_indices, new_seed_pos, new_cell_indices
