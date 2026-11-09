@@ -8,6 +8,15 @@ This website is built using [Docusaurus 2](https://docusaurus.io/), a modern sta
 $ yarn
 ```
 
+### API Reference
+
+The pages in `docs/reference` are generated from the docstrings and are not stored in git. Generate them before running `yarn start` or `yarn build`, otherwise the build fails on broken links:
+
+```
+$ pip install pydoc-markdown
+$ cd ../scripts && bash doc_reference.sh
+```
+
 ### Local Development
 
 ```
